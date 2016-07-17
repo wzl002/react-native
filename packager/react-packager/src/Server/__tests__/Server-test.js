@@ -14,22 +14,26 @@ jest.setMock('worker-farm', function() { return () => {}; })
     .setMock('timers', { setImmediate: (fn) => setTimeout(fn, 0) })
     .setMock('uglify-js')
     .setMock('crypto')
+    .setMock('source-map', { SourceMapConsumer: function(fn) {}})
     .mock('../../Bundler')
     .mock('../../AssetServer')
     .mock('../../lib/declareOpts')
     .mock('node-haste')
     .mock('../../Activity');
 
-const Promise = require('promise');
-
-var Bundler = require('../../Bundler');
-var Server = require('../');
-var AssetServer = require('../../AssetServer');
-
-var FileWatcher;
+let FileWatcher;
 
 describe('processRequest', () => {
-  var server;
+  let SourceMapConsumer, Bundler, Server, AssetServer, Promise;
+  beforeEach(() => {
+    SourceMapConsumer = require('source-map').SourceMapConsumer;
+    Bundler = require('../../Bundler');
+    Server = require('../');
+    AssetServer = require('../../AssetServer');
+    Promise = require('promise');
+  });
+
+  let server;
 
   const options = {
      projectRoots: ['root'],
@@ -56,8 +60,8 @@ describe('processRequest', () => {
 
   const invalidatorFunc = jest.fn();
   const watcherFunc = jest.fn();
-  var requestHandler;
-  var triggerFileChange;
+  let requestHandler;
+  let triggerFileChange;
 
   beforeEach(() => {
     FileWatcher = require('node-haste').FileWatcher;
@@ -148,6 +152,7 @@ describe('processRequest', () => {
         runBeforeMainModule: ['InitializeJavaScriptAppEngine'],
         unbundle: false,
         entryModuleOnly: false,
+        isolateModuleIDs: false,
       });
     });
   });
@@ -170,6 +175,7 @@ describe('processRequest', () => {
         runBeforeMainModule: ['InitializeJavaScriptAppEngine'],
         unbundle: false,
         entryModuleOnly: false,
+        isolateModuleIDs: false,
       });
     });
   });
@@ -291,9 +297,9 @@ describe('processRequest', () => {
   });
 
   describe('/onchange endpoint', () => {
-    var EventEmitter;
-    var req;
-    var res;
+    let EventEmitter;
+    let req;
+    let res;
 
     beforeEach(() => {
       EventEmitter = require.requireActual('events').EventEmitter;
@@ -345,6 +351,19 @@ describe('processRequest', () => {
       expect(AssetServer.prototype.get).toBeCalledWith('imgs/a.png', 'ios');
       expect(res.end).toBeCalledWith('i am image');
     });
+
+    it('should serve range request', () => {
+      const req = {url: '/assets/imgs/a.png?platform=ios', headers: {range: 'bytes=0-3'}};
+      const res = {end: jest.fn(), writeHead: jest.fn()};
+      const mockData = 'i am image';
+
+      AssetServer.prototype.get.mockImpl(() => Promise.resolve(mockData));
+
+      server.processRequest(req, res);
+      jest.runAllTimers();
+      expect(AssetServer.prototype.get).toBeCalledWith('imgs/a.png', 'ios');
+      expect(res.end).toBeCalledWith(mockData.slice(0, 3));
+    });
   });
 
   describe('buildbundle(options)', () => {
@@ -363,6 +382,7 @@ describe('processRequest', () => {
           runBeforeMainModule: ['InitializeJavaScriptAppEngine'],
           unbundle: false,
           entryModuleOnly: false,
+          isolateModuleIDs: false,
         })
       );
     });
@@ -384,8 +404,86 @@ describe('processRequest', () => {
             runBeforeMainModule: ['InitializeJavaScriptAppEngine'],
             unbundle: false,
             entryModuleOnly: false,
+            isolateModuleIDs: false,
           })
         );
+    });
+  });
+
+  describe('/symbolicate endpoint', () => {
+    pit('should symbolicate given stack trace', () => {
+      const body = JSON.stringify({stack: [{
+        file: 'http://foo.bundle?platform=ios',
+        lineNumber: 2100,
+        column: 44,
+        customPropShouldBeLeftUnchanged: 'foo',
+      }]});
+
+      SourceMapConsumer.prototype.originalPositionFor = jest.fn((frame) => {
+        expect(frame.line).toEqual(2100);
+        expect(frame.column).toEqual(44);
+        return {
+          source: 'foo.js',
+          line: 21,
+          column: 4,
+        };
+      });
+
+      return makeRequest(
+        requestHandler,
+        '/symbolicate',
+        { rawBody: body }
+      ).then(response => {
+        expect(JSON.parse(response.body)).toEqual({
+          stack: [{
+            file: 'foo.js',
+            lineNumber: 21,
+            column: 4,
+            customPropShouldBeLeftUnchanged: 'foo',
+          }]
+        });
+      });
+    });
+
+    pit('ignores `/debuggerWorker.js` stack frames', () => {
+      const body = JSON.stringify({stack: [{
+        file: 'http://localhost:8081/debuggerWorker.js',
+        lineNumber: 123,
+        column: 456,
+      }]});
+
+      return makeRequest(
+        requestHandler,
+        '/symbolicate',
+        { rawBody: body }
+      ).then(response => {
+        expect(JSON.parse(response.body)).toEqual({
+          stack: [{
+            file: 'http://localhost:8081/debuggerWorker.js',
+            lineNumber: 123,
+            column: 456,
+          }]
+        });
+      });
+    });
+  });
+
+  describe('/symbolicate handles errors', () => {
+    pit('should symbolicate given stack trace', () => {
+      const body = 'clearly-not-json';
+      console.error = jest.fn();
+
+      return makeRequest(
+        requestHandler,
+        '/symbolicate',
+        { rawBody: body }
+      ).then(response => {
+        expect(response.statusCode).toEqual(500);
+        expect(JSON.parse(response.body)).toEqual({
+          error: jasmine.any(String),
+        });
+        expect(console.error).toBeCalled();
+      });
     });
   });
 });

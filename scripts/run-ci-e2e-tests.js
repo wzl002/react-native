@@ -27,6 +27,7 @@ const path = require('path');
 
 const SCRIPTS = __dirname;
 const ROOT = path.normalize(path.join(__dirname, '..'));
+const tryExecNTimes = require('./try-n-times');
 
 const TEMP = exec('mktemp -d /tmp/react-native-XXXXXXXX').stdout.trim();
 // To make sure we actually installed the local version
@@ -38,33 +39,6 @@ const numberOfRetries = argv.retries || 1;
 let SERVER_PID;
 let APPIUM_PID;
 let exitCode;
-
-
-/**
- * Try executing a function n times recursively.
- * Return 0 the first time it succeeds
- * Return code of the last failed commands if not more retries left
- * @funcToRetry - function that gets retried
- * @retriesLeft - number of retries to execute funcToRetry
- * @onEveryError - func to execute if funcToRetry returns non 0 
- */
-function tryExecNTimes(funcToRetry, retriesLeft, onEveryError) {
-  const exitCode = funcToRetry();
-  if (exitCode === 0) {
-    return exitCode;
-  } else {
-    if (onEveryError) {
-      onEveryError();
-    }
-    retriesLeft--;
-    echo(`Command failed, ${retriesLeft} retries left`);
-    if (retriesLeft === 0) {
-      return exitCode;
-    } else {
-      return tryExecNTimes(funcToRetry, retriesLeft, onEveryError);
-    }
-  }
-}
 
 try {
   // install CLI
@@ -104,7 +78,7 @@ try {
       exec('sleep 10s');
       return exec(`react-native init EndToEndTest --version ${PACKAGE}`).code;
     },
-    numberOfRetries, 
+    numberOfRetries,
     () => rm('-rf', 'EndToEndTest'))) {
       echo('Failed to execute react-native init');
       echo('Most common reason is npm registry connectivity, try again');
@@ -157,7 +131,7 @@ try {
     });
     SERVER_PID = packagerProcess.pid;
     // wait a bit to allow packager to startup
-    exec('sleep 5s');
+    exec('sleep 15s');
     echo('Executing android e2e test');
     if (tryExecNTimes(
       () => {
@@ -228,7 +202,7 @@ try {
     }
   }
   exitCode = 0;
-  
+
 } finally {
   cd(ROOT);
   rm(MARKER_IOS);
